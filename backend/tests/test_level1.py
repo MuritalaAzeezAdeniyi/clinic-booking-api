@@ -1,3 +1,4 @@
+import os
 from datetime import datetime, timedelta, timezone
 
 from fastapi.testclient import TestClient
@@ -6,6 +7,7 @@ from app.database import SessionLocal
 from app.main import app, seed_demo_slots
 from app.models import Booking, Slot
 
+os.environ["API_KEY"] = "test-key"
 client = TestClient(app)
 
 
@@ -61,15 +63,16 @@ def test_reset_replaces_slots_and_deletes_bookings():
                 {"id": "replacement-2", "provider": "Dr Delta", "start": "2026-12-11T11:00:00Z", "end": "2026-12-11T11:30:00Z"},
             ]
         },
+        headers={"X-API-Key": "test-key"},
     )
     assert response.status_code == 200
 
-    slots_response = client.get("/slots")
+    slots_response = client.get("/slots", headers={"X-API-Key": "test-key"})
     assert slots_response.status_code == 200
     slots = slots_response.json()["slots"]
     assert [slot["id"] for slot in slots] == ["replacement-1", "replacement-2"]
 
-    lookup = client.get("/bookings/b1")
+    lookup = client.get("/bookings/b1", headers={"X-API-Key": "test-key"})
     assert lookup.status_code == 404
 
 
@@ -89,7 +92,7 @@ def test_get_slots_filters_and_sorts_by_start_and_available():
     finally:
         db.close()
 
-    response = client.get("/slots?provider=Dr+Ade")
+    response = client.get("/slots?provider=Dr+Ade", headers={"X-API-Key": "test-key"})
     assert response.status_code == 200
     slots = response.json()["slots"]
     assert [slot["id"] for slot in slots] == ["s1", "s2"]
@@ -117,6 +120,7 @@ def test_post_bookings_creates_booking_and_get_booking_by_id():
     response = client.post(
         "/bookings",
         json={"slot_id": "slot-123", "name": "  Alice  ", "email": " ALICE@example.com "},
+        headers={"X-API-Key": "test-key"},
     )
 
     assert response.status_code == 201
@@ -127,6 +131,6 @@ def test_post_bookings_creates_booking_and_get_booking_by_id():
     assert data["status"] == "confirmed"
     assert data["created_at"].endswith("Z")
 
-    lookup = client.get(f"/bookings/{data['id']}")
+    lookup = client.get(f"/bookings/{data['id']}", headers={"X-API-Key": "test-key"})
     assert lookup.status_code == 200
     assert lookup.json()["id"] == data["id"]

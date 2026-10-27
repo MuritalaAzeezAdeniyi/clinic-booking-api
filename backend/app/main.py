@@ -1,16 +1,46 @@
-from datetime import datetime, timezone
+import os
+import re
 import uuid
+from datetime import datetime, timezone
+from secrets import compare_digest
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from sqlalchemy import or_
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.database import SessionLocal, init_db
 from app.models import Booking, Slot
 
 app = FastAPI(title="Clinic Booking API")
+
+
+def get_expected_api_key():
+    return os.getenv("API_KEY", "")
+
+
+@app.middleware("http")
+async def api_key_middleware(request: Request, call_next):
+    if request.method == "OPTIONS":
+        return JSONResponse(
+            status_code=200,
+            content={},
+            headers={
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
+                "Access-Control-Allow-Headers": "Content-Type, X-API-Key",
+            },
+        )
+
+    if request.url.path == "/health":
+        return await call_next(request)
+
+    expected = get_expected_api_key()
+    provided = request.headers.get("X-API-Key")
+    if not expected or not provided or not compare_digest(provided, expected):
+        return JSONResponse(status_code=401, content={"error": "unauthorized"})
+
+    return await call_next(request)
 
 init_db()
 
@@ -156,20 +186,28 @@ def list_slots(provider: str | None = None):
 
 @app.post("/bookings")
 def create_booking(payload: dict):
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="invalid request body")
+
     slot_id = payload.get("slot_id")
     name = payload.get("name")
     email = payload.get("email")
 
-    if slot_id is None or not str(slot_id).strip():
+    if not isinstance(slot_id, str) or not slot_id.strip():
         raise HTTPException(status_code=400, detail="slot_id is required")
-    if name is None or not str(name).strip():
+    if not isinstance(name, str) or not name.strip():
         raise HTTPException(status_code=400, detail="name is required")
-    if email is None or not str(email).strip():
+    if not isinstance(email, str) or not email.strip():
         raise HTTPException(status_code=400, detail="email is required")
+
+    normalized_name = name.strip()
+    normalized_email = email.strip().lower()
+    if not re.fullmatch(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", normalized_email):
+        raise HTTPException(status_code=400, detail="email is invalid")
 
     db = SessionLocal()
     try:
-        slot = db.query(Slot).filter(Slot.id == str(slot_id)).first()
+        slot = db.query(Slot).filter(Slot.id == slot_id.strip()).first()
         if slot is None:
             raise HTTPException(status_code=404, detail="slot not found")
 
@@ -182,8 +220,8 @@ def create_booking(payload: dict):
         booking = Booking(
             id=booking_id,
             slot_id=slot.id,
-            name=str(name).strip(),
-            email=str(email).strip().lower(),
+            name=normalized_name,
+            email=normalized_email,
             status="confirmed",
         )
         db.add(booking)
