@@ -1,11 +1,18 @@
+from datetime import datetime, timezone
+import uuid
+
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from sqlalchemy import or_
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from app.database import init_db
+from app.database import SessionLocal, init_db
+from app.models import Booking, Slot
 
 app = FastAPI(title="Clinic Booking API")
+
+init_db()
 
 
 @app.on_event("startup")
@@ -41,6 +48,45 @@ async def unknown_exception_handler(request, exc: Exception):
     return JSONResponse(status_code=500, content={"error": "internal server error"})
 
 
+def parse_utc(dt_text: str):
+    return datetime.strptime(dt_text, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+
+
+def seed_demo_slots():
+    from datetime import timedelta
+
+    db = SessionLocal()
+    try:
+        if db.query(Slot).first() is not None:
+            return
+
+        now = datetime.now(timezone.utc)
+        demo_slots = [
+            Slot(
+                id="demo-s1",
+                provider="Dr Ade",
+                start=(now + timedelta(days=1, hours=9)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                end=(now + timedelta(days=1, hours=9, minutes=30)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            ),
+            Slot(
+                id="demo-s2",
+                provider="Dr Bisi",
+                start=(now + timedelta(days=2, hours=10)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                end=(now + timedelta(days=2, hours=10, minutes=30)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            ),
+            Slot(
+                id="demo-s3",
+                provider="Dr Ade",
+                start=(now + timedelta(days=3, hours=14)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                end=(now + timedelta(days=3, hours=14, minutes=30)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            ),
+        ]
+        db.add_all(demo_slots)
+        db.commit()
+    finally:
+        db.close()
+
+
 @app.get("/health")
 def health_check():
     return {"status": "ok"}
@@ -54,3 +100,125 @@ def manual_error():
 @app.get("/requires-name")
 def requires_name(name: str = Query(...)):
     return {"name": name}
+
+
+@app.post("/reset")
+def reset_slots(payload: dict):
+    slots = payload.get("slots", [])
+    db = SessionLocal()
+    try:
+        db.query(Booking).delete()
+        db.query(Slot).delete()
+
+        for slot in slots:
+            db.add(
+                Slot(
+                    id=slot["id"],
+                    provider=slot["provider"],
+                    start=slot["start"],
+                    end=slot["end"],
+                )
+            )
+
+        db.commit()
+    finally:
+        db.close()
+
+    return {"status": "ok"}
+
+
+@app.get("/slots")
+def list_slots(provider: str | None = None):
+    db = SessionLocal()
+    try:
+        query = db.query(Slot)
+        if provider is not None:
+            query = query.filter(Slot.provider == provider)
+
+        slots = query.order_by(Slot.start.asc()).all()
+        results = []
+        for slot in slots:
+            confirmed_booking = db.query(Booking).filter(Booking.slot_id == slot.id, Booking.status == "confirmed").first()
+            results.append(
+                {
+                    "id": slot.id,
+                    "provider": slot.provider,
+                    "start": slot.start,
+                    "end": slot.end,
+                    "available": confirmed_booking is None,
+                }
+            )
+    finally:
+        db.close()
+
+    return {"slots": results}
+
+
+@app.post("/bookings")
+def create_booking(payload: dict):
+    slot_id = payload.get("slot_id")
+    name = payload.get("name")
+    email = payload.get("email")
+
+    if slot_id is None or not str(slot_id).strip():
+        raise HTTPException(status_code=400, detail="slot_id is required")
+    if name is None or not str(name).strip():
+        raise HTTPException(status_code=400, detail="name is required")
+    if email is None or not str(email).strip():
+        raise HTTPException(status_code=400, detail="email is required")
+
+    db = SessionLocal()
+    try:
+        slot = db.query(Slot).filter(Slot.id == str(slot_id)).first()
+        if slot is None:
+            raise HTTPException(status_code=404, detail="slot not found")
+
+        now = datetime.now(timezone.utc)
+        current_start = parse_utc(slot.start)
+        if current_start <= now:
+            raise HTTPException(status_code=400, detail="slot has already started")
+
+        booking_id = str(uuid.uuid4())
+        booking = Booking(
+            id=booking_id,
+            slot_id=slot.id,
+            name=str(name).strip(),
+            email=str(email).strip().lower(),
+            status="confirmed",
+        )
+        db.add(booking)
+        db.commit()
+        db.refresh(booking)
+
+        return JSONResponse(
+            status_code=201,
+            content={
+                "id": booking.id,
+                "slot_id": booking.slot_id,
+                "name": booking.name,
+                "email": booking.email,
+                "status": booking.status,
+                "created_at": booking.created_at.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            },
+        )
+    finally:
+        db.close()
+
+
+@app.get("/bookings/{booking_id}")
+def get_booking(booking_id: str):
+    db = SessionLocal()
+    try:
+        booking = db.query(Booking).filter(Booking.id == booking_id).first()
+        if booking is None:
+            raise HTTPException(status_code=404, detail="booking not found")
+        return {
+            "id": booking.id,
+            "slot_id": booking.slot_id,
+            "name": booking.name,
+            "email": booking.email,
+            "status": booking.status,
+            "created_at": booking.created_at.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        }
+    finally:
+        db.close()
