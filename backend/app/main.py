@@ -3,9 +3,13 @@ import binascii
 import json
 import os
 import re
+import threading
 import uuid
+from collections import defaultdict, deque
 from datetime import datetime, timezone
+from math import ceil
 from secrets import compare_digest
+from time import monotonic
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
@@ -20,6 +24,44 @@ from app.database import SessionLocal, init_db
 from app.models import Booking, IdempotencyRecord, Slot
 
 app = FastAPI(title="Clinic Booking API")
+
+# Process-local by design: counters reset on restart and are not shared across instances.
+RATE_LIMIT_WINDOW_SECONDS = 60
+RATE_LIMIT_MAX_ATTEMPTS = 5
+rate_limit_lock = threading.Lock()
+rate_limit_attempts: dict[str, deque[float]] = defaultdict(deque)
+
+
+def get_rate_limit_retry_after(email_value):
+    if not isinstance(email_value, str) or not email_value.strip():
+        return None
+
+    normalized_email = email_value.strip().lower()
+    now = monotonic()
+    cutoff = now - RATE_LIMIT_WINDOW_SECONDS
+    with rate_limit_lock:
+        attempts = rate_limit_attempts[normalized_email]
+        while attempts and attempts[0] <= cutoff:
+            attempts.popleft()
+
+        if len(attempts) >= RATE_LIMIT_MAX_ATTEMPTS:
+            return max(1, ceil(RATE_LIMIT_WINDOW_SECONDS - (now - attempts[0])))
+
+        attempts.append(now)
+        return None
+
+
+def clear_rate_limit_counters():
+    with rate_limit_lock:
+        rate_limit_attempts.clear()
+
+
+def rate_limit_response(retry_after: int):
+    return JSONResponse(
+        status_code=429,
+        content={"error": f"rate limit exceeded; retry after {retry_after} seconds"},
+        headers={"Retry-After": str(retry_after)},
+    )
 
 
 def get_expected_api_key():
@@ -254,6 +296,7 @@ def reset_slots(payload: dict):
             )
 
         db.commit()
+        clear_rate_limit_counters()
     finally:
         db.close()
 
@@ -293,6 +336,10 @@ def create_booking(payload: dict, request: Request):
     db = SessionLocal()
     try:
         if not idempotency_key:
+            email_value = payload.get("email") if isinstance(payload, dict) else None
+            retry_after = get_rate_limit_retry_after(email_value)
+            if retry_after is not None:
+                return rate_limit_response(retry_after)
             status_code, response_body = create_booking_result(payload, db)
             db.commit()
             return JSONResponse(status_code=status_code, content=response_body)
@@ -318,6 +365,12 @@ def create_booking(payload: dict, request: Request):
                 status_code=existing.response_status,
                 content=json.loads(existing.response_body),
             )
+
+        email_value = payload.get("email") if isinstance(payload, dict) else None
+        retry_after = get_rate_limit_retry_after(email_value)
+        if retry_after is not None:
+            db.rollback()
+            return rate_limit_response(retry_after)
 
         try:
             status_code, response_body = create_booking_result(payload, db)

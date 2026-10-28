@@ -44,6 +44,7 @@ async function requestJson(path, options = {}) {
 
     const error = new Error(errorMessage)
     error.status = response.status
+    error.retryAfter = response.headers.get('Retry-After')
     throw error
   }
 
@@ -143,7 +144,10 @@ export default function App() {
       })
       await loadSlots()
     } catch (error) {
-      setMessage({ type: 'error', text: error.message || 'Booking failed.' })
+      const errorText = error.status === 429
+        ? `Too many booking attempts. Please wait ${error.retryAfter || 'at least 1'} seconds before trying again. ${error.message}`
+        : error.message || 'Booking failed.'
+      setMessage({ type: 'error', text: errorText })
     } finally {
       setBookingLoading(false)
     }

@@ -35,3 +35,9 @@ cd frontend
 npm install
 npm run dev
 ```
+
+## Rate limit note
+
+The Level 5 booking rate limiter is held in process memory. Its counters reset
+when the backend restarts and are not shared across multiple backend instances;
+deployments that need a shared limit should use a shared store such as Redis.

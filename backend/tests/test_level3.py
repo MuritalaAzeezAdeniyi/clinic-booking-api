@@ -7,7 +7,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.database import SessionLocal
-from app.main import app
+from app.main import app, clear_rate_limit_counters
 from app.models import Booking, Slot
 
 
@@ -15,6 +15,7 @@ client = TestClient(app)
 
 
 def reset_db():
+    clear_rate_limit_counters()
     db = SessionLocal()
     try:
         db.query(Booking).delete()

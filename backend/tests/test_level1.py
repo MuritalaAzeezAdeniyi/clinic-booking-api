@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 from fastapi.testclient import TestClient
 
 from app.database import SessionLocal
-from app.main import app, seed_demo_slots
+from app.main import app, clear_rate_limit_counters, seed_demo_slots
 from app.models import Booking, Slot
 
 os.environ["API_KEY"] = "test-key"
@@ -12,6 +12,7 @@ client = TestClient(app)
 
 
 def reset_db():
+    clear_rate_limit_counters()
     db = SessionLocal()
     try:
         db.query(Booking).delete()
