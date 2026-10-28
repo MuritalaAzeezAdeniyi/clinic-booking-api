@@ -206,160 +206,225 @@ export default function App() {
 
   return (
     <main className="app-shell">
-      <div className="page-header">
-        <div>
-          <p className="eyebrow">Clinic booking</p>
-          <h1>Book your consultation</h1>
+      <header className="site-header">
+        <a className="brand" href="#top" aria-label="Slotwell home">
+          <span className="brand-mark" aria-hidden="true">
+            <svg viewBox="0 0 40 40" role="img">
+              <rect x="1" y="1" width="38" height="38" rx="13" fill="currentColor" />
+              <path d="M20 10v20M10 20h20" stroke="white" strokeWidth="3.5" strokeLinecap="round" />
+              <circle cx="29" cy="11" r="3" fill="#a7f3d0" />
+            </svg>
+          </span>
+          <span className="brand-copy"><strong>Slotwell</strong><small>Care, made simple</small></span>
+        </a>
+        <span className="header-note"><span className="header-dot" /> A little more time for you</span>
+      </header>
+
+      <section className="hero" id="top">
+        <div className="hero-copy">
+          <p className="eyebrow">Thoughtful care starts here</p>
+          <h1>Book your care,<br /><span>on your time.</span></h1>
+          <p className="hero-description">Choose a time that works for you. We’ll take care of the rest.</p>
         </div>
         {!apiKey && (
           <div className="env-warning">
             Set VITE_API_KEY in frontend/.env before using the app.
           </div>
         )}
+        <div className="hero-art" aria-hidden="true">
+          <div className="hero-orbit orbit-one" />
+          <div className="hero-orbit orbit-two" />
+          <div className="hero-cross">+</div>
+          <div className="hero-note"><span className="note-check">✓</span><span><strong>Your time matters</strong><small>Care on your schedule</small></span></div>
+        </div>
+      </section>
+
+      <div className="booking-layout">
+        <section className="panel slots-panel">
+          <div className="panel-heading">
+            <div>
+              <p className="section-kicker">FIND YOUR MOMENT</p>
+              <h2>Available slots</h2>
+              <p className="panel-subtitle">Pick a time that feels right.</p>
+            </div>
+            <label className="provider-filter">
+              <span>Choose a provider</span>
+              <select value={providerFilter} onChange={(event) => setProviderFilter(event.target.value)}>
+                {providerOptions.map((provider) => (
+                  <option key={provider} value={provider}>
+                    {provider === 'all' ? 'All providers' : provider}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+
+          {slotsLoading ? (
+            <div className="slots-grid" aria-label="Loading appointment slots">
+              <p className="status-message info" aria-live="polite">Loading slots… the API may be waking up.</p>
+              {[0, 1, 2, 3].map((item) => (
+                <div className="slot-skeleton" key={item} aria-hidden="true">
+                  <span className="skeleton-line skeleton-provider" />
+                  <span className="skeleton-line skeleton-date" />
+                  <span className="skeleton-line skeleton-time" />
+                </div>
+              ))}
+            </div>
+          ) : slotsError ? (
+            <div className="status-message error" role="alert" aria-live="assertive"><span className="alert-icon" aria-hidden="true">!</span>{slotsError}</div>
+          ) : (
+            <div className="slots-grid">
+              {slots.length === 0 ? (
+                <p className="empty-state">No slots are available for this provider.</p>
+              ) : (
+                slots.map((slot, index) => {
+                  const initials = slot.provider.split(/\s+/).filter(Boolean).map((part) => part[0]).slice(0, 2).join('').toUpperCase()
+                  const slotStart = new Date(slot.start)
+                  const slotEnd = new Date(slot.end)
+                  const dateLabel = Number.isNaN(slotStart.getTime()) ? slot.start : slotStart.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' })
+                  const timeLabel = Number.isNaN(slotStart.getTime()) || Number.isNaN(slotEnd.getTime())
+                    ? `${formatLocalDateTime(slot.start)} – ${formatLocalDateTime(slot.end)}`
+                    : `${slotStart.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })} – ${slotEnd.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`
+
+                  return (
+                    <article
+                      key={slot.id}
+                      style={{ '--card-order': index }}
+                      className={`slot-card ${slot.available ? 'available' : 'unavailable'} ${selectedSlotId === slot.id ? 'selected' : ''}`}
+                    >
+                      <div className="slot-card-top">
+                        <span className="provider-avatar" aria-hidden="true">{initials}</span>
+                        <span className={`availability ${slot.available ? 'open' : 'closed'}`}>
+                          <span className="availability-dot" />{slot.available ? 'Available' : 'Booked'}
+                        </span>
+                      </div>
+                      <p className="slot-provider">{slot.provider}</p>
+                      <p className="slot-date">{dateLabel}</p>
+                      <p className="slot-times">{timeLabel}</p>
+                      <button
+                        type="button"
+                        className="slot-select-button"
+                        onClick={() => setSelectedSlotId(slot.id)}
+                        disabled={!slot.available}
+                      >
+                        {selectedSlotId === slot.id ? 'Selected' : slot.available ? 'Choose this time' : 'Not available'}
+                        {slot.available && <span aria-hidden="true">→</span>}
+                      </button>
+                    </article>
+                  )
+                })
+              )}
+            </div>
+          )}
+        </section>
+
+        <aside className="side-column">
+          <section className="panel booking-panel">
+            <div className="form-heading">
+              <span className="form-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24"><rect x="3.5" y="5" width="17" height="16" rx="3" /><path d="M8 3v4M16 3v4M4 10h16M8 14h3M8 17h6" /></svg>
+              </span>
+              <div><p className="section-kicker">NEXT STEP</p><h2>Book your visit</h2></div>
+            </div>
+
+            <form onSubmit={handleBookingSubmit} className="booking-form">
+              <label>
+                Selected appointment
+                <input
+                  type="text"
+                  value={selectedSlot ? `${selectedSlot.provider} · ${formatLocalDateTime(selectedSlot.start)}` : 'Choose an available slot'}
+                  readOnly
+                />
+                <small className="field-hint">Select a green appointment card to get started.</small>
+              </label>
+
+              <label>
+                Full name
+                <input
+                  type="text"
+                  placeholder="e.g. Aishat Sarafadeen"
+                  value={formData.name}
+                  onChange={(event) => setFormData((current) => ({ ...current, name: event.target.value }))}
+                  required
+                />
+              </label>
+
+              <label>
+                Email address
+                <input
+                  type="email"
+                  placeholder="you@example.com"
+                  value={formData.email}
+                  onChange={(event) => setFormData((current) => ({ ...current, email: event.target.value }))}
+                  required
+                />
+                <small className="field-hint">Your confirmation will be associated with this email.</small>
+              </label>
+
+              <button type="submit" className="primary-button" disabled={bookingLoading || !selectedSlot || !selectedSlot.available}>
+                {bookingLoading && <span className="button-spinner" aria-hidden="true" />}
+                {bookingLoading ? 'Booking…' : 'Book appointment'}
+                {!bookingLoading && <span aria-hidden="true">→</span>}
+              </button>
+              <p className="privacy-note"><span aria-hidden="true">✓</span> Your details are only used for this appointment.</p>
+            </form>
+          </section>
+
+          <div className="care-note"><span className="care-note-mark" aria-hidden="true">✳</span><p><strong>A calmer way to book.</strong><br />Take a moment for yourself. We’ll be ready when you are.</p></div>
+        </aside>
       </div>
 
-      <section className="panel">
-        <div className="panel-heading">
-          <h2>Available slots</h2>
-          <label className="provider-filter">
-            <span>Provider</span>
-            <select value={providerFilter} onChange={(event) => setProviderFilter(event.target.value)}>
-              {providerOptions.map((provider) => (
-                <option key={provider} value={provider}>
-                  {provider === 'all' ? 'All providers' : provider}
-                </option>
-              ))}
-            </select>
-          </label>
-        </div>
-
-        {slotsLoading ? (
-          <p className="status-message info">Loading slots… the API may be waking up.</p>
-        ) : slotsError ? (
-          <p className="status-message error">{slotsError}</p>
-        ) : (
-          <div className="slots-grid">
-            {slots.length === 0 ? (
-              <p className="empty-state">No slots are available for this provider.</p>
-            ) : (
-              slots.map((slot) => (
-                <article
-                  key={slot.id}
-                  className={`slot-card ${slot.available ? 'available' : 'unavailable'} ${
-                    selectedSlotId === slot.id ? 'selected' : ''
-                  }`}
-                >
-                  <div>
-                    <p className="slot-provider">{slot.provider}</p>
-                    <p className="slot-times">
-                      {formatLocalDateTime(slot.start)} – {formatLocalDateTime(slot.end)}
-                    </p>
-                  </div>
-
-                  <div className="slot-actions">
-                    <span className={`availability ${slot.available ? 'open' : 'closed'}`}>
-                      {slot.available ? 'Available' : 'Unavailable'}
-                    </span>
-                    <button
-                      type="button"
-                      className="secondary-button"
-                      onClick={() => setSelectedSlotId(slot.id)}
-                      disabled={!slot.available}
-                    >
-                      {selectedSlotId === slot.id ? 'Selected' : 'Select'}
-                    </button>
-                  </div>
-                </article>
-              ))
-            )}
-          </div>
-        )}
-      </section>
-
-      <section className="panel booking-panel">
-        <h2>Book a slot</h2>
-
-        <form onSubmit={handleBookingSubmit} className="booking-form">
-          <label>
-            Selected slot
-            <input
-              type="text"
-              value={selectedSlot ? `${selectedSlot.provider} · ${formatLocalDateTime(selectedSlot.start)}` : 'Choose an available slot'}
-              readOnly
-            />
-          </label>
-
-          <label>
-            Full name
-            <input
-              type="text"
-              placeholder="Jane Doe"
-              value={formData.name}
-              onChange={(event) => setFormData((current) => ({ ...current, name: event.target.value }))}
-              required
-            />
-          </label>
-
-          <label>
-            Email address
-            <input
-              type="email"
-              placeholder="jane@example.com"
-              value={formData.email}
-              onChange={(event) => setFormData((current) => ({ ...current, email: event.target.value }))}
-              required
-            />
-          </label>
-
-          <button type="submit" disabled={bookingLoading || !selectedSlot || !selectedSlot.available}>
-            {bookingLoading ? 'Booking…' : 'Book appointment'}
-          </button>
-        </form>
-      </section>
-
       {message.text && (
-        <div className={`status-message ${message.type === 'success' ? 'success' : 'error'}`}>
-          {message.text}
+        <div className={`status-message page-feedback ${message.type === 'success' ? 'success' : 'error'}`} role={message.type === 'error' ? 'alert' : 'status'} aria-live={message.type === 'error' ? 'assertive' : 'polite'}>
+          <span className="alert-icon" aria-hidden="true">{message.type === 'success' ? '✓' : '!'}</span>{message.text}
         </div>
       )}
 
       {confirmation && (
-        <section className="panel confirmation-panel">
-          <h2>Booking confirmation</h2>
-          <p>
-            <strong>{confirmation.name}</strong> · {confirmation.email}
-          </p>
-          <p>
-            {confirmation.slot?.provider || 'Clinic'} · {formatLocalDateTime(confirmation.slot?.start || confirmation.created_at)}
-          </p>
-          <p>Status: {confirmation.status}</p>
-          <p>Booking ID: {confirmation.id}</p>
+        <section className="panel confirmation-panel" aria-live="polite">
+          <div className="confirmation-heading">
+            <span className="success-check" aria-hidden="true"><svg viewBox="0 0 32 32"><circle cx="16" cy="16" r="14" /><path d="m9 16 5 5 9-10" /></svg></span>
+            <div><p className="section-kicker">YOU’RE ALL SET</p><h2>Booking confirmed</h2></div>
+          </div>
+          <div className="confirmation-details">
+            <p><span>Name</span><strong>{confirmation.name}</strong></p>
+            <p><span>Email</span><strong>{confirmation.email}</strong></p>
+            <p><span>Appointment</span><strong>{confirmation.slot?.provider || 'Clinic'} · {formatLocalDateTime(confirmation.slot?.start || confirmation.created_at)}</strong></p>
+            <p><span>Status</span><strong className="confirmation-status">{confirmation.status}</strong></p>
+            <p><span>Booking ID</span><strong className="booking-id">{confirmation.id}</strong></p>
+          </div>
 
           <button type="button" className="danger-button" onClick={handleCancelBooking} disabled={cancelLoading}>
+            {cancelLoading && <span className="button-spinner" aria-hidden="true" />}
             {cancelLoading ? 'Cancelling…' : 'Cancel booking'}
           </button>
         </section>
       )}
 
       <section className="panel lookup-panel">
-        <h2>My bookings</h2>
+        <div className="lookup-heading">
+          <span className="lookup-icon" aria-hidden="true">⌕</span>
+          <div><p className="section-kicker">ALREADY BOOKED?</p><h2>My bookings</h2></div>
+        </div>
+        <p className="panel-subtitle">Look up appointments linked to your email address.</p>
         <form className="lookup-form" onSubmit={(event) => lookupMyBookings(event)}>
           <label>
             Email address
             <input
               type="email"
-              placeholder="jane@example.com"
+              placeholder="you@example.com"
               value={lookupEmail}
               onChange={(event) => setLookupEmail(event.target.value)}
               required
             />
           </label>
-          <button type="submit" disabled={lookupLoading}>
+          <button type="submit" className="outline-button" disabled={lookupLoading}>
+            {lookupLoading && <span className="button-spinner" aria-hidden="true" />}
             {lookupLoading ? 'Searching…' : 'Find my bookings'}
           </button>
         </form>
 
-        {lookupError && <p className="status-message error">{lookupError}</p>}
+        {lookupError && <p className="status-message error" role="alert" aria-live="assertive"><span className="alert-icon" aria-hidden="true">!</span>{lookupError}</p>}
         {lookupSearched && lookupBookings.length === 0 && !lookupLoading && (
           <p className="empty-state">No bookings found for that email.</p>
         )}
@@ -383,10 +448,17 @@ export default function App() {
             onClick={() => lookupMyBookings(null, lookupCursor, false)}
             disabled={lookupLoading}
           >
+            {lookupLoading && <span className="button-spinner" aria-hidden="true" />}
             {lookupLoading ? 'Loading…' : 'Next page'}
           </button>
         )}
       </section>
+
+      <footer className="site-footer">
+        <a className="footer-brand" href="#top"><span className="footer-mark" aria-hidden="true">✚</span>Slotwell</a>
+        <span>Book your care, on your time.</span>
+        <span>Made for your wellbeing <span aria-hidden="true">♥</span></span>
+      </footer>
     </main>
   )
 }
