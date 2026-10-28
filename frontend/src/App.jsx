@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 const apiBase = (import.meta.env.VITE_API_URL || 'http://localhost:8000').replace(/\/$/, '')
 const apiKey = import.meta.env.VITE_API_KEY || ''
@@ -61,6 +61,13 @@ export default function App() {
   const [cancelLoading, setCancelLoading] = useState(false)
   const [message, setMessage] = useState({ type: '', text: '' })
   const [confirmation, setConfirmation] = useState(null)
+  const [lookupEmail, setLookupEmail] = useState('')
+  const [lookupBookings, setLookupBookings] = useState([])
+  const [lookupCursor, setLookupCursor] = useState(null)
+  const [lookupLoading, setLookupLoading] = useState(false)
+  const [lookupError, setLookupError] = useState('')
+  const [lookupSearched, setLookupSearched] = useState(false)
+  const bookingAttemptRef = useRef(null)
 
   const providerOptions = useMemo(
     () => ['all', ...new Set(slots.map((slot) => slot.provider))],
@@ -102,17 +109,27 @@ export default function App() {
       return
     }
 
+    const bookingPayload = {
+      slot_id: selectedSlot.id,
+      name: formData.name,
+      email: formData.email,
+    }
+    const attemptFingerprint = JSON.stringify(bookingPayload)
+    if (bookingAttemptRef.current?.fingerprint !== attemptFingerprint) {
+      bookingAttemptRef.current = {
+        fingerprint: attemptFingerprint,
+        key: globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      }
+    }
+
     setBookingLoading(true)
     setMessage({ type: '', text: '' })
 
     try {
       const booking = await requestJson('/bookings', {
         method: 'POST',
-        body: JSON.stringify({
-          slot_id: selectedSlot.id,
-          name: formData.name,
-          email: formData.email,
-        }),
+        headers: { 'Idempotency-Key': bookingAttemptRef.current.key },
+        body: JSON.stringify(bookingPayload),
       })
 
       setConfirmation({
@@ -129,6 +146,29 @@ export default function App() {
       setMessage({ type: 'error', text: error.message || 'Booking failed.' })
     } finally {
       setBookingLoading(false)
+    }
+  }
+
+  const lookupMyBookings = async (event, cursor = null, replace = true) => {
+    event?.preventDefault()
+    if (!lookupEmail.trim()) {
+      setLookupError('Enter your email address to look up bookings.')
+      return
+    }
+
+    setLookupLoading(true)
+    setLookupError('')
+    try {
+      const query = new URLSearchParams({ email: lookupEmail.trim() })
+      if (cursor) query.set('cursor', cursor)
+      const result = await requestJson(`/bookings?${query.toString()}`)
+      setLookupBookings((current) => replace ? result.bookings : [...current, ...result.bookings])
+      setLookupCursor(result.next_cursor)
+      setLookupSearched(true)
+    } catch (error) {
+      setLookupError(error.message || 'Unable to look up bookings.')
+    } finally {
+      setLookupLoading(false)
     }
   }
 
@@ -296,6 +336,53 @@ export default function App() {
           </button>
         </section>
       )}
+
+      <section className="panel lookup-panel">
+        <h2>My bookings</h2>
+        <form className="lookup-form" onSubmit={(event) => lookupMyBookings(event)}>
+          <label>
+            Email address
+            <input
+              type="email"
+              placeholder="jane@example.com"
+              value={lookupEmail}
+              onChange={(event) => setLookupEmail(event.target.value)}
+              required
+            />
+          </label>
+          <button type="submit" disabled={lookupLoading}>
+            {lookupLoading ? 'Searching…' : 'Find my bookings'}
+          </button>
+        </form>
+
+        {lookupError && <p className="status-message error">{lookupError}</p>}
+        {lookupSearched && lookupBookings.length === 0 && !lookupLoading && (
+          <p className="empty-state">No bookings found for that email.</p>
+        )}
+        {lookupBookings.length > 0 && (
+          <div className="booking-results">
+            {lookupBookings.map((booking) => (
+              <article className="booking-result" key={booking.id}>
+                <div>
+                  <strong>{booking.name}</strong>
+                  <span>{formatLocalDateTime(booking.created_at)}</span>
+                </div>
+                <span className={`booking-status ${booking.status}`}>{booking.status}</span>
+              </article>
+            ))}
+          </div>
+        )}
+        {lookupCursor && (
+          <button
+            type="button"
+            className="secondary-button next-page-button"
+            onClick={() => lookupMyBookings(null, lookupCursor, false)}
+            disabled={lookupLoading}
+          >
+            {lookupLoading ? 'Loading…' : 'Next page'}
+          </button>
+        )}
+      </section>
     </main>
   )
 }

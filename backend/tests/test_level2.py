@@ -1,7 +1,9 @@
 import datetime
 
+import pytest
 from fastapi.testclient import TestClient
 
+from app.config import API_KEY
 from app.database import SessionLocal
 from app.main import app
 from app.models import Booking, Slot
@@ -26,14 +28,26 @@ def auth_headers(api_key="test-key"):
 
 def test_missing_or_wrong_api_key_is_rejected(monkeypatch):
     monkeypatch.setenv("API_KEY", "test-key")
+    monkeypatch.setenv("ALLOWED_ORIGINS", "http://localhost:5173")
 
-    response = client.get("/slots")
+    response = client.get("/slots", headers={"Origin": "http://localhost:5173"})
     assert response.status_code == 401
     assert response.json() == {"error": "unauthorized"}
+    assert response.headers["access-control-allow-origin"] == "http://localhost:5173"
 
     response = client.get("/slots", headers=auth_headers("wrong-key"))
     assert response.status_code == 401
     assert response.json() == {"error": "unauthorized"}
+
+
+def test_backend_env_file_api_key_authenticates_when_process_key_is_unset(monkeypatch):
+    if not API_KEY:
+        pytest.skip("No API_KEY is configured in backend/.env or the process environment.")
+
+    monkeypatch.delenv("API_KEY", raising=False)
+    response = client.get("/slots", headers=auth_headers(API_KEY))
+
+    assert response.status_code == 200
 
 
 def test_cors_allows_configured_origin(monkeypatch):

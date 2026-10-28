@@ -1,3 +1,6 @@
+import base64
+import binascii
+import json
 import os
 import re
 import uuid
@@ -9,15 +12,18 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from sqlalchemy.exc import IntegrityError
 from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.middleware.cors import CORSMiddleware
+from sqlalchemy import and_, func, or_
 
+from app.config import API_KEY
 from app.database import SessionLocal, init_db
-from app.models import Booking, Slot
+from app.models import Booking, IdempotencyRecord, Slot
 
 app = FastAPI(title="Clinic Booking API")
 
 
 def get_expected_api_key():
-    return os.getenv("API_KEY", "")
+    return os.environ["API_KEY"] if "API_KEY" in os.environ else API_KEY
 
 
 def get_allowed_origins():
@@ -27,37 +33,25 @@ def get_allowed_origins():
 
 @app.middleware("http")
 async def api_key_middleware(request: Request, call_next):
-    origin = request.headers.get("origin")
-    allowed_origins = get_allowed_origins()
-    is_allowed_origin = bool(origin and origin in allowed_origins)
-
-    if request.method == "OPTIONS":
-        headers = {
-            "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
-            "Access-Control-Allow-Headers": "Content-Type, X-API-Key, Idempotency-Key",
-            "Access-Control-Expose-Headers": "Retry-After",
-        }
-        if is_allowed_origin:
-            headers["Access-Control-Allow-Origin"] = origin
-        return JSONResponse(status_code=200, content={}, headers=headers)
-
     if request.url.path == "/health":
-        response = await call_next(request)
-        if is_allowed_origin:
-            response.headers["Access-Control-Allow-Origin"] = origin
-            response.headers["Access-Control-Expose-Headers"] = "Retry-After"
-        return response
+        return await call_next(request)
 
     expected = get_expected_api_key()
     provided = request.headers.get("X-API-Key")
     if not expected or not provided or not compare_digest(provided, expected):
         return JSONResponse(status_code=401, content={"error": "unauthorized"})
 
-    response = await call_next(request)
-    if is_allowed_origin:
-        response.headers["Access-Control-Allow-Origin"] = origin
-        response.headers["Access-Control-Expose-Headers"] = "Retry-After"
-    return response
+    return await call_next(request)
+
+
+# Register CORS last so it is the outermost middleware and decorates auth/error responses.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=get_allowed_origins(),
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type", "X-API-Key", "Idempotency-Key"],
+    expose_headers=["Retry-After"],
+)
 
 init_db()
 
@@ -97,6 +91,97 @@ async def unknown_exception_handler(request, exc: Exception):
 
 def parse_utc(dt_text: str):
     return datetime.strptime(dt_text, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+
+
+def serialize_booking(booking: Booking):
+    created_at = booking.created_at
+    if created_at.tzinfo is None:
+        created_at = created_at.replace(tzinfo=timezone.utc)
+    return {
+        "id": booking.id,
+        "slot_id": booking.slot_id,
+        "name": booking.name,
+        "email": booking.email,
+        "status": booking.status,
+        "created_at": created_at.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    }
+
+
+def create_booking_result(payload: dict, db):
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="invalid request body")
+
+    slot_id = payload.get("slot_id")
+    name = payload.get("name")
+    email = payload.get("email")
+
+    if not isinstance(slot_id, str) or not slot_id.strip():
+        raise HTTPException(status_code=400, detail="slot_id is required")
+    if not isinstance(name, str) or not name.strip():
+        raise HTTPException(status_code=400, detail="name is required")
+    if not isinstance(email, str) or not email.strip():
+        raise HTTPException(status_code=400, detail="email is required")
+
+    normalized_name = name.strip()
+    normalized_email = email.strip().lower()
+    if not re.fullmatch(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", normalized_email):
+        raise HTTPException(status_code=400, detail="email is invalid")
+
+    slot = db.query(Slot).filter(Slot.id == slot_id.strip()).first()
+    if slot is None:
+        raise HTTPException(status_code=404, detail="slot not found")
+
+    if parse_utc(slot.start) <= datetime.now(timezone.utc):
+        raise HTTPException(status_code=400, detail="slot has already started")
+
+    booking = Booking(
+        id=str(uuid.uuid4()),
+        slot_id=slot.id,
+        name=normalized_name,
+        email=normalized_email,
+        status="confirmed",
+    )
+    try:
+        with db.begin_nested():
+            db.add(booking)
+            db.flush()
+    except IntegrityError:
+        raise HTTPException(status_code=409, detail="slot already booked")
+
+    db.refresh(booking)
+    return 201, serialize_booking(booking)
+
+
+def encode_booking_cursor(email: str, booking: Booking):
+    timestamp = booking.created_at
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.replace(tzinfo=timezone.utc)
+    cursor_data = {
+        "email": email,
+        "created_at": timestamp.astimezone(timezone.utc).isoformat(),
+        "id": booking.id,
+    }
+    encoded = base64.urlsafe_b64encode(json.dumps(cursor_data, separators=(",", ":")).encode())
+    return encoded.rstrip(b"=").decode("ascii")
+
+
+def decode_booking_cursor(cursor: str, email: str):
+    try:
+        padded_cursor = cursor + "=" * (-len(cursor) % 4)
+        raw = base64.b64decode(padded_cursor, altchars=b"-_", validate=True)
+        data = json.loads(raw.decode("utf-8"))
+        cursor_email = data["email"]
+        cursor_id = data["id"]
+        cursor_time = datetime.fromisoformat(data["created_at"])
+        if not isinstance(cursor_email, str) or not isinstance(cursor_id, str):
+            raise ValueError("invalid cursor data")
+        if cursor_email != email or not cursor_id:
+            raise ValueError("cursor does not match email")
+        if cursor_time.tzinfo is None:
+            cursor_time = cursor_time.replace(tzinfo=timezone.utc)
+        return cursor_time.astimezone(timezone.utc), cursor_id
+    except (KeyError, TypeError, ValueError, UnicodeDecodeError, binascii.Error, json.JSONDecodeError):
+        raise HTTPException(status_code=400, detail="invalid cursor")
 
 
 def seed_demo_slots():
@@ -154,6 +239,7 @@ def reset_slots(payload: dict):
     slots = payload.get("slots", [])
     db = SessionLocal()
     try:
+        db.query(IdempotencyRecord).delete()
         db.query(Booking).delete()
         db.query(Slot).delete()
 
@@ -202,64 +288,84 @@ def list_slots(provider: str | None = None):
 
 
 @app.post("/bookings")
-def create_booking(payload: dict):
-    if not isinstance(payload, dict):
-        raise HTTPException(status_code=400, detail="invalid request body")
-
-    slot_id = payload.get("slot_id")
-    name = payload.get("name")
-    email = payload.get("email")
-
-    if not isinstance(slot_id, str) or not slot_id.strip():
-        raise HTTPException(status_code=400, detail="slot_id is required")
-    if not isinstance(name, str) or not name.strip():
-        raise HTTPException(status_code=400, detail="name is required")
-    if not isinstance(email, str) or not email.strip():
-        raise HTTPException(status_code=400, detail="email is required")
-
-    normalized_name = name.strip()
-    normalized_email = email.strip().lower()
-    if not re.fullmatch(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", normalized_email):
-        raise HTTPException(status_code=400, detail="email is invalid")
-
+def create_booking(payload: dict, request: Request):
+    idempotency_key = request.headers.get("Idempotency-Key", "").strip()
     db = SessionLocal()
     try:
-        slot = db.query(Slot).filter(Slot.id == slot_id.strip()).first()
-        if slot is None:
-            raise HTTPException(status_code=404, detail="slot not found")
-
-        now = datetime.now(timezone.utc)
-        current_start = parse_utc(slot.start)
-        if current_start <= now:
-            raise HTTPException(status_code=400, detail="slot has already started")
-
-        booking_id = str(uuid.uuid4())
-        booking = Booking(
-            id=booking_id,
-            slot_id=slot.id,
-            name=normalized_name,
-            email=normalized_email,
-            status="confirmed",
-        )
-        db.add(booking)
-        try:
+        if not idempotency_key:
+            status_code, response_body = create_booking_result(payload, db)
             db.commit()
+            return JSONResponse(status_code=status_code, content=response_body)
+
+        request_body = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+        record = IdempotencyRecord(
+            key=idempotency_key,
+            request_body=request_body,
+            response_status=0,
+            response_body="{}",
+        )
+        db.add(record)
+        try:
+            db.flush()
         except IntegrityError:
             db.rollback()
-            raise HTTPException(status_code=409, detail="slot already booked")
-        db.refresh(booking)
+            existing = db.query(IdempotencyRecord).filter(IdempotencyRecord.key == idempotency_key).first()
+            if existing is None:
+                raise
+            if existing.request_body != request_body:
+                return JSONResponse(status_code=422, content={"error": "Idempotency-Key reused with different request body"})
+            return JSONResponse(
+                status_code=existing.response_status,
+                content=json.loads(existing.response_body),
+            )
 
-        return JSONResponse(
-            status_code=201,
-            content={
-                "id": booking.id,
-                "slot_id": booking.slot_id,
-                "name": booking.name,
-                "email": booking.email,
-                "status": booking.status,
-                "created_at": booking.created_at.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-            },
-        )
+        try:
+            status_code, response_body = create_booking_result(payload, db)
+        except HTTPException as error:
+            status_code = error.status_code
+            error_message = "not found" if status_code == 404 else str(error.detail)
+            response_body = {"error": error_message}
+
+        record.response_status = status_code
+        record.response_body = json.dumps(response_body, separators=(",", ":"))
+        db.commit()
+        return JSONResponse(status_code=status_code, content=response_body)
+    finally:
+        db.close()
+
+
+@app.get("/bookings")
+def list_bookings(
+    email: str | None = None,
+    limit: int = 10,
+    cursor: str | None = None,
+):
+    if email is None or not email.strip():
+        raise HTTPException(status_code=400, detail="email is required")
+    if limit < 1 or limit > 50:
+        raise HTTPException(status_code=400, detail="limit must be between 1 and 50")
+
+    normalized_email = email.strip().lower()
+    db = SessionLocal()
+    try:
+        query = db.query(Booking).filter(func.lower(Booking.email) == normalized_email)
+        if cursor is not None:
+            cursor_time, cursor_id = decode_booking_cursor(cursor, normalized_email)
+            query = query.filter(
+                or_(
+                    Booking.created_at > cursor_time,
+                    and_(Booking.created_at == cursor_time, Booking.id > cursor_id),
+                )
+            )
+
+        page = query.order_by(Booking.created_at.asc(), Booking.id.asc()).limit(limit + 1).all()
+        has_more = len(page) > limit
+        page = page[:limit]
+        next_cursor = encode_booking_cursor(normalized_email, page[-1]) if has_more and page else None
+        return {
+            "bookings": [serialize_booking(booking) for booking in page],
+            "next_cursor": next_cursor,
+        }
     finally:
         db.close()
 

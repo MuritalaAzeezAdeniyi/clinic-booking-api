@@ -71,6 +71,7 @@ def test_delete_booking_sets_status_to_cancelled_and_frees_slot(monkeypatch):
 
 def test_delete_booking_rejects_unknown_and_already_cancelled(monkeypatch):
     monkeypatch.setenv("API_KEY", "test-key")
+    monkeypatch.setenv("ALLOWED_ORIGINS", "http://localhost:5173")
     reset_db()
 
     missing = client.delete("/bookings/missing-booking", headers=auth_headers())
@@ -99,9 +100,13 @@ def test_delete_booking_rejects_unknown_and_already_cancelled(monkeypatch):
     finally:
         db.close()
 
-    response = client.delete("/bookings/booking-cancelled", headers=auth_headers())
+    response = client.delete(
+        "/bookings/booking-cancelled",
+        headers={**auth_headers(), "Origin": "http://localhost:5173"},
+    )
     assert response.status_code == 409
     assert response.json()["error"]
+    assert response.headers["access-control-allow-origin"] == "http://localhost:5173"
 
 
 async def create_booking_request(payload):

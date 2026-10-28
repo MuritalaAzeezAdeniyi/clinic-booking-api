@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from sqlalchemy import Column, DateTime, ForeignKey, Index, String, text
+from sqlalchemy import Column, DateTime, ForeignKey, Index, Integer, String, Text, text
 from sqlalchemy.orm import relationship
 
 from app.database import Base
@@ -35,3 +35,12 @@ class Booking(Base):
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
 
     slot = relationship("Slot", back_populates="bookings")
+
+
+class IdempotencyRecord(Base):
+    __tablename__ = "idempotency_records"
+
+    key = Column(String, primary_key=True)
+    request_body = Column(Text, nullable=False)
+    response_status = Column(Integer, nullable=False)
+    response_body = Column(Text, nullable=False)
