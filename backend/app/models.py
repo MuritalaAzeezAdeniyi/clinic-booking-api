@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from sqlalchemy import Column, DateTime, ForeignKey, String
+from sqlalchemy import Column, DateTime, ForeignKey, Index, String, text
 from sqlalchemy.orm import relationship
 
 from app.database import Base
@@ -18,6 +18,14 @@ class Slot(Base):
 
 class Booking(Base):
     __tablename__ = "bookings"
+    __table_args__ = (
+        Index(
+            "ix_unique_confirmed_booking_per_slot",
+            "slot_id",
+            unique=True,
+            postgresql_where=text("status = 'confirmed'"),
+        ),
+    )
 
     id = Column(String, primary_key=True, index=True)
     slot_id = Column(String, ForeignKey("slots.id"), nullable=False, index=True)

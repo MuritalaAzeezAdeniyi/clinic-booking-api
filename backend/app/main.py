@@ -7,6 +7,7 @@ from secrets import compare_digest
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from sqlalchemy.exc import IntegrityError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.database import SessionLocal, init_db
@@ -19,28 +20,44 @@ def get_expected_api_key():
     return os.getenv("API_KEY", "")
 
 
+def get_allowed_origins():
+    raw = os.getenv("ALLOWED_ORIGINS", "http://localhost:5173")
+    return [origin.strip() for origin in raw.split(",") if origin.strip()]
+
+
 @app.middleware("http")
 async def api_key_middleware(request: Request, call_next):
+    origin = request.headers.get("origin")
+    allowed_origins = get_allowed_origins()
+    is_allowed_origin = bool(origin and origin in allowed_origins)
+
     if request.method == "OPTIONS":
-        return JSONResponse(
-            status_code=200,
-            content={},
-            headers={
-                "Access-Control-Allow-Origin": "*",
-                "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
-                "Access-Control-Allow-Headers": "Content-Type, X-API-Key",
-            },
-        )
+        headers = {
+            "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
+            "Access-Control-Allow-Headers": "Content-Type, X-API-Key, Idempotency-Key",
+            "Access-Control-Expose-Headers": "Retry-After",
+        }
+        if is_allowed_origin:
+            headers["Access-Control-Allow-Origin"] = origin
+        return JSONResponse(status_code=200, content={}, headers=headers)
 
     if request.url.path == "/health":
-        return await call_next(request)
+        response = await call_next(request)
+        if is_allowed_origin:
+            response.headers["Access-Control-Allow-Origin"] = origin
+            response.headers["Access-Control-Expose-Headers"] = "Retry-After"
+        return response
 
     expected = get_expected_api_key()
     provided = request.headers.get("X-API-Key")
     if not expected or not provided or not compare_digest(provided, expected):
         return JSONResponse(status_code=401, content={"error": "unauthorized"})
 
-    return await call_next(request)
+    response = await call_next(request)
+    if is_allowed_origin:
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Access-Control-Expose-Headers"] = "Retry-After"
+    return response
 
 init_db()
 
@@ -225,7 +242,11 @@ def create_booking(payload: dict):
             status="confirmed",
         )
         db.add(booking)
-        db.commit()
+        try:
+            db.commit()
+        except IntegrityError:
+            db.rollback()
+            raise HTTPException(status_code=409, detail="slot already booked")
         db.refresh(booking)
 
         return JSONResponse(
@@ -239,6 +260,32 @@ def create_booking(payload: dict):
                 "created_at": booking.created_at.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             },
         )
+    finally:
+        db.close()
+
+
+@app.delete("/bookings/{booking_id}")
+def delete_booking(booking_id: str):
+    db = SessionLocal()
+    try:
+        booking = db.query(Booking).filter(Booking.id == booking_id).first()
+        if booking is None:
+            raise HTTPException(status_code=404, detail="booking not found")
+        if booking.status == "cancelled":
+            raise HTTPException(status_code=409, detail="booking already cancelled")
+
+        booking.status = "cancelled"
+        db.commit()
+        db.refresh(booking)
+
+        return {
+            "id": booking.id,
+            "slot_id": booking.slot_id,
+            "name": booking.name,
+            "email": booking.email,
+            "status": booking.status,
+            "created_at": booking.created_at.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        }
     finally:
         db.close()
 

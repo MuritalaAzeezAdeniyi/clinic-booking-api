@@ -36,17 +36,54 @@ def test_missing_or_wrong_api_key_is_rejected(monkeypatch):
     assert response.json() == {"error": "unauthorized"}
 
 
+def test_cors_allows_configured_origin(monkeypatch):
+    monkeypatch.setenv("API_KEY", "test-key")
+    monkeypatch.setenv("ALLOWED_ORIGINS", "http://localhost:5173,https://example.com")
+
+    response = client.get(
+        "/slots",
+        headers={
+            "Origin": "http://localhost:5173",
+            "X-API-Key": "test-key",
+        },
+    )
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == "http://localhost:5173"
+    assert response.headers["access-control-expose-headers"] == "Retry-After"
+
+
+def test_cors_rejects_disallowed_origin(monkeypatch):
+    monkeypatch.setenv("API_KEY", "test-key")
+    monkeypatch.setenv("ALLOWED_ORIGINS", "http://localhost:5173")
+
+    response = client.get(
+        "/slots",
+        headers={
+            "Origin": "https://evil.example",
+            "X-API-Key": "test-key",
+        },
+    )
+    assert response.status_code == 200
+    assert "access-control-allow-origin" not in response.headers
+
+
 def test_options_preflight_bypasses_api_key(monkeypatch):
     monkeypatch.delenv("API_KEY", raising=False)
+    monkeypatch.setenv("ALLOWED_ORIGINS", "http://localhost:5173")
 
     response = client.options(
         "/slots",
         headers={
             "Origin": "http://localhost:5173",
             "Access-Control-Request-Method": "GET",
+            "Access-Control-Request-Headers": "X-API-Key, Content-Type, Idempotency-Key",
         },
     )
     assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == "http://localhost:5173"
+    assert "x-api-key" in response.headers["access-control-allow-headers"].lower()
+    assert "idempotency-key" in response.headers["access-control-allow-headers"].lower()
+    assert "content-type" in response.headers["access-control-allow-headers"].lower()
 
 
 def test_post_bookings_rejects_missing_and_empty_fields(monkeypatch):
