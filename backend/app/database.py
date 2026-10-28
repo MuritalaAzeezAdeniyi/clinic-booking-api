@@ -23,32 +23,35 @@ def init_db():
     Base.metadata.create_all(bind=engine)
     db = SessionLocal()
     try:
-        has_slots = db.query(Slot).first() is not None
-        if not has_slots:
-            from datetime import datetime, timedelta, timezone
-
-            now = datetime.now(timezone.utc)
-            demo_slots = [
-                Slot(
-                    id="demo-s1",
-                    provider="Dr Ade",
-                    start=(now + timedelta(days=1, hours=9)).strftime("%Y-%m-%dT%H:%M:%SZ"),
-                    end=(now + timedelta(days=1, hours=9, minutes=30)).strftime("%Y-%m-%dT%H:%M:%SZ"),
-                ),
-                Slot(
-                    id="demo-s2",
-                    provider="Dr Bisi",
-                    start=(now + timedelta(days=2, hours=10)).strftime("%Y-%m-%dT%H:%M:%SZ"),
-                    end=(now + timedelta(days=2, hours=10, minutes=30)).strftime("%Y-%m-%dT%H:%M:%SZ"),
-                ),
-                Slot(
-                    id="demo-s3",
-                    provider="Dr Ade",
-                    start=(now + timedelta(days=3, hours=14)).strftime("%Y-%m-%dT%H:%M:%SZ"),
-                    end=(now + timedelta(days=3, hours=14, minutes=30)).strftime("%Y-%m-%dT%H:%M:%SZ"),
-                ),
-            ]
-            db.add_all(demo_slots)
+        if db.query(Slot).first() is None:
+            seed_demo_slots(db)
             db.commit()
     finally:
         db.close()
+
+
+def seed_demo_slots(db):
+    from datetime import datetime, time, timedelta, timezone
+
+    from app.models import Slot
+
+    first_day = datetime.now(timezone.utc).date() + timedelta(days=1)
+    providers = ("Dr Ade", "Dr Bisi")
+    demo_slots = []
+
+    for day_offset in range(3):
+        slot_date = first_day + timedelta(days=day_offset)
+        first_start = datetime.combine(slot_date, time(9, 0), tzinfo=timezone.utc)
+        for slot_number in range(4):
+            start = first_start + timedelta(minutes=30 * slot_number)
+            end = start + timedelta(minutes=30)
+            demo_slots.append(
+                Slot(
+                    id=f"demo-{slot_date:%Y%m%d}-{slot_number + 1}",
+                    provider=providers[slot_number % len(providers)],
+                    start=start.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    end=end.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                )
+            )
+
+    db.add_all(demo_slots)

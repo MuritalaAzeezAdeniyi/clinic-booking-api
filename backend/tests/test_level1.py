@@ -3,7 +3,7 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi.testclient import TestClient
 
-from app.database import SessionLocal
+from app.database import Base, SessionLocal, init_db
 from app.main import app, clear_rate_limit_counters, seed_demo_slots
 from app.models import Booking, Slot
 
@@ -22,13 +22,41 @@ def reset_db():
         db.close()
 
 
-def test_seed_demo_slots_when_empty():
+def test_startup_seed_creates_tables_then_inserts_future_utc_slots_only_when_empty(monkeypatch):
     reset_db()
-    seed_demo_slots()
+    create_all_called = []
+    original_create_all = Base.metadata.create_all
+
+    def track_create_all(*, bind=None, **kwargs):
+        create_all_called.append(True)
+        return original_create_all(bind=bind, **kwargs)
+
+    monkeypatch.setattr(Base.metadata, "create_all", track_create_all)
+    today_utc = datetime.now(timezone.utc).date()
+    init_db()
 
     db = SessionLocal()
     try:
-        slots = db.query(Slot).all()
+        slots = db.query(Slot).order_by(Slot.start.asc()).all()
+        seeded_ids = [slot.id for slot in slots]
+
+        assert len(slots) == 12
+        assert {slot.provider for slot in slots} == {"Dr Ade", "Dr Bisi"}
+
+        assert create_all_called
+        for day_offset in range(1, 4):
+            day_slots = [
+                slot for slot in slots
+                if datetime.strptime(slot.start, "%Y-%m-%dT%H:%M:%SZ").date()
+                == today_utc + timedelta(days=day_offset)
+            ]
+            assert len(day_slots) == 4
+            assert [slot.start[11:16] for slot in day_slots] == ["09:00", "09:30", "10:00", "10:30"]
+            assert [slot.end[11:16] for slot in day_slots] == ["09:30", "10:00", "10:30", "11:00"]
+            assert all(slot.start.endswith("Z") and slot.end.endswith("Z") for slot in day_slots)
+
+        seed_demo_slots()
+        assert [slot.id for slot in db.query(Slot).order_by(Slot.start.asc()).all()] == seeded_ids
     finally:
         db.close()
 
