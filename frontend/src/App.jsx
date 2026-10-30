@@ -281,6 +281,8 @@ export default function App() {
                   const initials = slot.provider.split(/\s+/).filter(Boolean).map((part) => part[0]).slice(0, 2).join('').toUpperCase()
                   const slotStart = new Date(slot.start)
                   const slotEnd = new Date(slot.end)
+                  const isPast = !Number.isFinite(slotStart.getTime()) || slotStart.getTime() <= Date.now()
+                  const isAvailable = slot.available && !isPast
                   const dateLabel = Number.isNaN(slotStart.getTime()) ? slot.start : slotStart.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' })
                   const timeLabel = Number.isNaN(slotStart.getTime()) || Number.isNaN(slotEnd.getTime())
                     ? `${formatLocalDateTime(slot.start)} – ${formatLocalDateTime(slot.end)}`
@@ -290,12 +292,12 @@ export default function App() {
                     <article
                       key={slot.id}
                       style={{ '--card-order': index }}
-                      className={`slot-card ${slot.available ? 'available' : 'unavailable'} ${selectedSlotId === slot.id ? 'selected' : ''}`}
+                      className={`slot-card ${isAvailable ? 'available' : 'unavailable'} ${selectedSlotId === slot.id ? 'selected' : ''}`}
                     >
                       <div className="slot-card-top">
                         <span className="provider-avatar" aria-hidden="true">{initials}</span>
-                        <span className={`availability ${slot.available ? 'open' : 'closed'}`}>
-                          <span className="availability-dot" />{slot.available ? 'Available' : 'Booked'}
+                        <span className={`availability ${isAvailable ? 'open' : 'closed'}`}>
+                          <span className="availability-dot" />{isAvailable ? 'Available' : isPast ? 'Past' : 'Booked'}
                         </span>
                       </div>
                       <p className="slot-provider">{slot.provider}</p>
@@ -305,10 +307,10 @@ export default function App() {
                         type="button"
                         className="slot-select-button"
                         onClick={() => setSelectedSlotId(slot.id)}
-                        disabled={!slot.available}
+                        disabled={!isAvailable}
                       >
-                        {selectedSlotId === slot.id ? 'Selected' : slot.available ? 'Choose this time' : 'Not available'}
-                        {slot.available && <span aria-hidden="true">→</span>}
+                        {selectedSlotId === slot.id ? 'Selected' : isPast ? 'Time passed' : isAvailable ? 'Choose this time' : 'Not available'}
+                        {isAvailable && <span aria-hidden="true">→</span>}
                       </button>
                     </article>
                   )

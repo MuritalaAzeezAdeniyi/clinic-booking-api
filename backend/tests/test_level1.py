@@ -32,7 +32,7 @@ def test_startup_seed_creates_tables_then_inserts_future_utc_slots_only_when_emp
         return original_create_all(bind=bind, **kwargs)
 
     monkeypatch.setattr(Base.metadata, "create_all", track_create_all)
-    today_utc = datetime.now(timezone.utc).date()
+    seeded_at = datetime.now(timezone.utc)
     init_db()
 
     db = SessionLocal()
@@ -44,11 +44,16 @@ def test_startup_seed_creates_tables_then_inserts_future_utc_slots_only_when_emp
         assert {slot.provider for slot in slots} == {"Dr Ade", "Dr Bisi"}
 
         assert create_all_called
-        for day_offset in range(1, 4):
+        slot_days = sorted({datetime.strptime(slot.start, "%Y-%m-%dT%H:%M:%SZ").date() for slot in slots})
+        assert len(slot_days) == 3
+        first_slot_start = datetime.strptime(slots[0].start, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+        assert first_slot_start >= seeded_at + timedelta(hours=24)
+
+        for day_offset in range(3):
             day_slots = [
                 slot for slot in slots
                 if datetime.strptime(slot.start, "%Y-%m-%dT%H:%M:%SZ").date()
-                == today_utc + timedelta(days=day_offset)
+                == slot_days[0] + timedelta(days=day_offset)
             ]
             assert len(day_slots) == 4
             assert [slot.start[11:16] for slot in day_slots] == ["09:00", "09:30", "10:00", "10:30"]
@@ -59,9 +64,6 @@ def test_startup_seed_creates_tables_then_inserts_future_utc_slots_only_when_emp
         assert [slot.id for slot in db.query(Slot).order_by(Slot.start.asc()).all()] == seeded_ids
     finally:
         db.close()
-
-    assert len(slots) >= 2
-    assert all(slot.start.endswith("Z") for slot in slots)
 
 
 def test_reset_replaces_slots_and_deletes_bookings():

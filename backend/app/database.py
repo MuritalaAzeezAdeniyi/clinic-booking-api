@@ -35,7 +35,12 @@ def seed_demo_slots(db):
 
     from app.models import Slot
 
-    first_day = datetime.now(timezone.utc).date() + timedelta(days=1)
+    now = datetime.now(timezone.utc)
+    earliest_start = now + timedelta(hours=24)
+    first_day = earliest_start.date()
+    first_start = datetime.combine(first_day, time(9, 0), tzinfo=timezone.utc)
+    if first_start < earliest_start:
+        first_day += timedelta(days=1)
     providers = ("Dr Ade", "Dr Bisi")
     demo_slots = []
 

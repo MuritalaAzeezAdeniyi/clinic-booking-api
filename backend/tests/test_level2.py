@@ -1,4 +1,5 @@
 import datetime
+from datetime import timedelta, timezone
 
 import pytest
 from fastapi.testclient import TestClient
@@ -182,6 +183,44 @@ def test_post_bookings_rejects_missing_slot_and_started_slots(monkeypatch):
     )
     assert started.status_code == 400
     assert started.json()["error"]
+
+
+def test_booking_started_one_minute_ago_returns_400_and_one_hour_future_succeeds(monkeypatch):
+    monkeypatch.setenv("API_KEY", "test-key")
+    reset_db()
+    now = datetime.datetime.now(timezone.utc)
+    past_start = (now - timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    past_end = (now + timedelta(minutes=29)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    future_start = (now + timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    future_end = (now + timedelta(hours=1, minutes=30)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    db = SessionLocal()
+    try:
+        db.add_all(
+            [
+                Slot(id="one-minute-past", provider="Dr Ade", start=past_start, end=past_end),
+                Slot(id="one-hour-future", provider="Dr Bisi", start=future_start, end=future_end),
+            ]
+        )
+        db.commit()
+    finally:
+        db.close()
+
+    past_response = client.post(
+        "/bookings",
+        json={"slot_id": "one-minute-past", "name": "Alice", "email": "past@example.com"},
+        headers=auth_headers(),
+    )
+    assert past_response.status_code == 400
+    assert past_response.json() == {"error": "slot has already started"}
+
+    future_response = client.post(
+        "/bookings",
+        json={"slot_id": "one-hour-future", "name": "Bob", "email": "future@example.com"},
+        headers=auth_headers(),
+    )
+    assert future_response.status_code == 201
+    assert future_response.json()["slot_id"] == "one-hour-future"
 
 
 def test_post_bookings_trims_name_and_email_and_lowercases_email(monkeypatch):
