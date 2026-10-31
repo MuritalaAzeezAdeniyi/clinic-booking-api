@@ -17,7 +17,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.exc import IntegrityError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.cors import CORSMiddleware
-from sqlalchemy import and_, func, or_
+from sqlalchemy import and_, func, insert, or_
 
 from app.config import API_KEY
 from app.database import SessionLocal, init_db
@@ -190,7 +190,6 @@ def create_booking_result(payload: dict, db):
     except IntegrityError:
         raise HTTPException(status_code=409, detail="slot already booked")
 
-    db.refresh(booking)
     return 201, serialize_booking(booking)
 
 
@@ -285,14 +284,18 @@ def reset_slots(payload: dict):
         db.query(Booking).delete()
         db.query(Slot).delete()
 
-        for slot in slots:
-            db.add(
-                Slot(
-                    id=slot["id"],
-                    provider=slot["provider"],
-                    start=slot["start"],
-                    end=slot["end"],
-                )
+        if slots:
+            db.execute(
+                insert(Slot),
+                [
+                    {
+                        "id": slot["id"],
+                        "provider": slot["provider"],
+                        "start": slot["start"],
+                        "end": slot["end"],
+                    }
+                    for slot in slots
+                ],
             )
 
         db.commit()
@@ -312,16 +315,21 @@ def list_slots(provider: str | None = None):
             query = query.filter(Slot.provider == provider)
 
         slots = query.order_by(Slot.start.asc()).all()
+        confirmed_slot_ids = {
+            slot_id
+            for (slot_id,) in db.query(Booking.slot_id)
+            .filter(Booking.status == "confirmed", Booking.slot_id.in_([slot.id for slot in slots]))
+            .all()
+        }
         results = []
         for slot in slots:
-            confirmed_booking = db.query(Booking).filter(Booking.slot_id == slot.id, Booking.status == "confirmed").first()
             results.append(
                 {
                     "id": slot.id,
                     "provider": slot.provider,
                     "start": slot.start,
                     "end": slot.end,
-                    "available": confirmed_booking is None,
+                    "available": slot.id not in confirmed_slot_ids,
                 }
             )
     finally:

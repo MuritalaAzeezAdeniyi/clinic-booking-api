@@ -21,6 +21,12 @@ def init_db():
     from app.models import Booking, IdempotencyRecord, Slot
 
     Base.metadata.create_all(bind=engine)
+    for table, index_name in (
+        (Slot.__table__, "ix_slots_start"),
+        (Booking.__table__, "ix_bookings_slot_id"),
+    ):
+        index = next(index for index in table.indexes if index.name == index_name)
+        index.create(bind=engine, checkfirst=True)
     db = SessionLocal()
     try:
         if db.query(Slot).first() is None:

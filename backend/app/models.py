@@ -11,7 +11,7 @@ class Slot(Base):
 
     id = Column(String, primary_key=True, index=True)
     provider = Column(String, nullable=False)
-    start = Column(String, nullable=False)
+    start = Column(String, nullable=False, index=True)
     end = Column(String, nullable=False)
     bookings = relationship("Booking", back_populates="slot", cascade="all, delete-orphan")
 

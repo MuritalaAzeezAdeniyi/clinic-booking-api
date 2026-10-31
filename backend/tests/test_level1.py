@@ -1,9 +1,10 @@
 import os
 from datetime import datetime, timedelta, timezone
 
+from sqlalchemy import event
 from fastapi.testclient import TestClient
 
-from app.database import Base, SessionLocal, init_db
+from app.database import Base, SessionLocal, engine, init_db
 from app.main import app, clear_rate_limit_counters, seed_demo_slots
 from app.models import Booking, Slot
 
@@ -129,6 +130,48 @@ def test_get_slots_filters_and_sorts_by_start_and_available():
     assert [slot["id"] for slot in slots] == ["s1", "s2"]
     assert slots[0]["available"] is True
     assert slots[1]["available"] is False
+
+
+def test_get_slots_query_count_is_constant_for_small_and_large_slot_sets():
+    def count_slot_queries(slot_count):
+        reset_db()
+        now = datetime.now(timezone.utc)
+        db = SessionLocal()
+        try:
+            db.add_all(
+                [
+                    Slot(
+                        id=f"query-count-{index}",
+                        provider="Dr Ade",
+                        start=(now + timedelta(days=index + 1)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                        end=(now + timedelta(days=index + 1, minutes=30)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    )
+                    for index in range(slot_count)
+                ]
+            )
+            db.commit()
+        finally:
+            db.close()
+
+        statements = []
+
+        def count_statement(connection, cursor, statement, parameters, context, executemany):
+            statements.append(statement)
+
+        event.listen(engine, "before_cursor_execute", count_statement)
+        try:
+            response = client.get("/slots", headers={"X-API-Key": "test-key"})
+        finally:
+            event.remove(engine, "before_cursor_execute", count_statement)
+
+        assert response.status_code == 200
+        assert len(response.json()["slots"]) == slot_count
+        return len(statements)
+
+    five_slot_query_count = count_slot_queries(5)
+    three_hundred_slot_query_count = count_slot_queries(300)
+
+    assert five_slot_query_count == three_hundred_slot_query_count == 2
 
 
 def test_post_bookings_creates_booking_and_get_booking_by_id():
