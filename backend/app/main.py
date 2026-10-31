@@ -227,7 +227,38 @@ def decode_booking_cursor(cursor: str, email: str):
 
 
 def seed_demo_slots():
-    init_db()
+    from datetime import timedelta
+
+    db = SessionLocal()
+    try:
+        if db.query(Slot).first() is not None:
+            return
+
+        now = datetime.now(timezone.utc)
+        demo_slots = [
+            Slot(
+                id="demo-s1",
+                provider="Dr Ade",
+                start=(now + timedelta(days=1, hours=9)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                end=(now + timedelta(days=1, hours=9, minutes=30)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            ),
+            Slot(
+                id="demo-s2",
+                provider="Dr Bisi",
+                start=(now + timedelta(days=2, hours=10)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                end=(now + timedelta(days=2, hours=10, minutes=30)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            ),
+            Slot(
+                id="demo-s3",
+                provider="Dr Ade",
+                start=(now + timedelta(days=3, hours=14)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                end=(now + timedelta(days=3, hours=14, minutes=30)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            ),
+        ]
+        db.add_all(demo_slots)
+        db.commit()
+    finally:
+        db.close()
 
 
 @app.get("/health")
