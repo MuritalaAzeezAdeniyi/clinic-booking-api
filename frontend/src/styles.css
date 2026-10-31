@@ -136,10 +136,18 @@ input::placeholder { color: #9aa9a5; }
 input[readonly] { color: #667b76; background: #f5f8f6; }
 
 .slots-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 13px; }
+.slot-list { display: grid; gap: 22px; }
+.slot-day-group, .empty-upcoming { min-width: 0; display: grid; gap: 12px; }
+.slot-day-heading { margin: 0; color: var(--color-ink); font-size: 0.96rem; font-weight: 780; letter-spacing: -0.02em; }
+.started-slot-group { padding-top: 20px; border-top: 1px solid var(--color-border); }
+.day-toggle-button { justify-self: start; color: var(--color-primary-dark); border: 1px solid #b9d8c8; background: #f6fbf8; }
 .slot-card { --card-order: 0; min-width: 0; padding: 16px; border: 1px solid #e2ebe6; border-radius: var(--radius-md); background: #fff; animation: rise-in 350ms calc(40ms + var(--card-order) * 55ms) ease both; transition: transform 200ms ease, border-color 200ms ease, box-shadow 200ms ease, background 200ms ease; }
 .slot-card.available:hover { transform: translateY(-3px); border-color: #9bcbb7; box-shadow: var(--shadow-raised); }
 .slot-card.selected { border-color: var(--color-primary); background: #f4fbf7; box-shadow: 0 0 0 2px rgba(8,127,114,0.11), var(--shadow-card); }
 .slot-card.unavailable { background: #f6f8f7; border-color: #e5e9e7; color: #77827f; }
+.slot-card.started { background: #ecefed; border-color: #d7ddda; color: #707b77; filter: grayscale(1); }
+.slot-card.started .slot-provider, .slot-card.started .slot-times { color: #707b77; }
+.slot-card.started .slot-date { color: #7d8783; }
 .slot-card-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 12px; }
 .provider-avatar { width: 38px; height: 38px; display: grid; place-items: center; border-radius: 13px; background: #e8f4ee; color: #26775c; font-size: 0.76rem; font-weight: 800; letter-spacing: 0.04em; }
 .slot-card.unavailable .provider-avatar { background: #e9edeb; color: #77827f; }

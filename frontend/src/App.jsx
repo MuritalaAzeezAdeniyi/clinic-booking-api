@@ -55,6 +55,9 @@ export default function App() {
   const [slots, setSlots] = useState([])
   const [providerFilter, setProviderFilter] = useState('all')
   const [selectedSlotId, setSelectedSlotId] = useState('')
+  const [currentTime, setCurrentTime] = useState(() => Date.now())
+  const [showMoreDays, setShowMoreDays] = useState(false)
+  const [showPastSlots, setShowPastSlots] = useState(false)
   const [formData, setFormData] = useState({ name: '', email: '' })
   const [slotsLoading, setSlotsLoading] = useState(true)
   const [slotsError, setSlotsError] = useState('')
@@ -75,7 +78,47 @@ export default function App() {
     [slots],
   )
 
-  const selectedSlot = slots.find((slot) => slot.id === selectedSlotId) || null
+  const selectedSlot = slots.find((slot) => (
+    slot.id === selectedSlotId && slot.available && Number.isFinite(Date.parse(slot.start)) && Date.parse(slot.start) > currentTime
+  )) || null
+
+  const { upcomingGroups, startedSlots } = useMemo(() => {
+    const upcoming = []
+    const started = []
+
+    slots.forEach((slot) => {
+      const startTime = Date.parse(slot.start)
+      if (Number.isFinite(startTime) && startTime > currentTime) upcoming.push(slot)
+      else started.push(slot)
+    })
+
+    upcoming.sort((a, b) => Date.parse(a.start) - Date.parse(b.start))
+    started.sort((a, b) => {
+      const aTime = Date.parse(a.start)
+      const bTime = Date.parse(b.start)
+      if (!Number.isFinite(aTime)) return Number.isFinite(bTime) ? 1 : 0
+      if (!Number.isFinite(bTime)) return -1
+      return aTime - bTime
+    })
+
+    const groups = new Map()
+    upcoming.forEach((slot) => {
+      const date = new Date(slot.start)
+      const dayKey = `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`
+      if (!groups.has(dayKey)) {
+        groups.set(dayKey, {
+          key: dayKey,
+          heading: date.toLocaleDateString([], { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' }),
+          slots: [],
+        })
+      }
+      groups.get(dayKey).slots.push(slot)
+    })
+
+    return { upcomingGroups: [...groups.values()], startedSlots: started }
+  }, [slots, currentTime])
+
+  const visibleUpcomingGroups = showMoreDays ? upcomingGroups : upcomingGroups.slice(0, 14)
 
   const loadSlots = useCallback(async () => {
     setSlotsLoading(true)
@@ -87,9 +130,14 @@ export default function App() {
       const nextSlots = Array.isArray(data.slots) ? data.slots : []
       setSlots(nextSlots)
 
-      if (!nextSlots.some((slot) => slot.id === selectedSlotId)) {
-        const preferred = nextSlots.find((slot) => slot.available)
-        setSelectedSlotId(preferred ? preferred.id : nextSlots[0]?.id || '')
+      const selectedStillBookable = nextSlots.some((slot) => (
+        slot.id === selectedSlotId && slot.available && Number.isFinite(Date.parse(slot.start)) && Date.parse(slot.start) > Date.now()
+      ))
+      if (!selectedStillBookable) {
+        const preferred = nextSlots.find((slot) => (
+          slot.available && Number.isFinite(Date.parse(slot.start)) && Date.parse(slot.start) > Date.now()
+        ))
+        setSelectedSlotId(preferred?.id || '')
       }
     } catch (error) {
       setSlotsError(error.message || 'Unable to load slots right now.')
@@ -101,6 +149,51 @@ export default function App() {
   useEffect(() => {
     loadSlots()
   }, [loadSlots])
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setCurrentTime(Date.now()), 10000)
+    return () => window.clearInterval(timer)
+  }, [])
+
+  const renderSlotCard = (slot, index) => {
+    const initials = slot.provider.split(/\s+/).filter(Boolean).map((part) => part[0]).slice(0, 2).join('').toUpperCase()
+    const slotStart = new Date(slot.start)
+    const slotEnd = new Date(slot.end)
+    const hasValidStart = Number.isFinite(slotStart.getTime())
+    const isStarted = hasValidStart && slotStart.getTime() <= currentTime
+    const isAvailable = slot.available && hasValidStart && !isStarted
+    const dateLabel = !hasValidStart ? slot.start : slotStart.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' })
+    const timeLabel = !hasValidStart || Number.isNaN(slotEnd.getTime())
+      ? `${formatLocalDateTime(slot.start)} – ${formatLocalDateTime(slot.end)}`
+      : `${slotStart.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })} – ${slotEnd.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`
+
+    return (
+      <article
+        key={slot.id}
+        style={{ '--card-order': index }}
+        className={`slot-card ${isAvailable ? 'available' : 'unavailable'} ${isStarted ? 'started' : ''} ${selectedSlotId === slot.id && isAvailable ? 'selected' : ''}`}
+      >
+        <div className="slot-card-top">
+          <span className="provider-avatar" aria-hidden="true">{initials}</span>
+          <span className={`availability ${isAvailable ? 'open' : 'closed'}`}>
+            <span className="availability-dot" />{isStarted ? 'Started' : isAvailable ? 'Available' : 'Booked'}
+          </span>
+        </div>
+        <p className="slot-provider">{slot.provider}</p>
+        <p className="slot-date">{dateLabel}</p>
+        <p className="slot-times">{timeLabel}</p>
+        <button
+          type="button"
+          className="slot-select-button"
+          onClick={() => setSelectedSlotId(slot.id)}
+          disabled={!isAvailable}
+        >
+          {selectedSlotId === slot.id && isAvailable ? 'Selected' : isStarted ? 'Started' : isAvailable ? 'Choose this time' : 'Not available'}
+          {isAvailable && <span aria-hidden="true">→</span>}
+        </button>
+      </article>
+    )
+  }
 
   const handleBookingSubmit = async (event) => {
     event.preventDefault()
@@ -249,7 +342,11 @@ export default function App() {
             </div>
             <label className="provider-filter">
               <span>Choose a provider</span>
-              <select value={providerFilter} onChange={(event) => setProviderFilter(event.target.value)}>
+              <select value={providerFilter} onChange={(event) => {
+                setShowMoreDays(false)
+                setShowPastSlots(false)
+                setProviderFilter(event.target.value)
+              }}>
                 {providerOptions.map((provider) => (
                   <option key={provider} value={provider}>
                     {provider === 'all' ? 'All providers' : provider}
@@ -273,48 +370,59 @@ export default function App() {
           ) : slotsError ? (
             <div className="status-message error" role="alert" aria-live="assertive"><span className="alert-icon" aria-hidden="true">!</span>{slotsError}</div>
           ) : (
-            <div className="slots-grid">
-              {slots.length === 0 ? (
-                <p className="empty-state">No slots are available for this provider.</p>
-              ) : (
-                slots.map((slot, index) => {
-                  const initials = slot.provider.split(/\s+/).filter(Boolean).map((part) => part[0]).slice(0, 2).join('').toUpperCase()
-                  const slotStart = new Date(slot.start)
-                  const slotEnd = new Date(slot.end)
-                  const isPast = !Number.isFinite(slotStart.getTime()) || slotStart.getTime() <= Date.now()
-                  const isAvailable = slot.available && !isPast
-                  const dateLabel = Number.isNaN(slotStart.getTime()) ? slot.start : slotStart.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' })
-                  const timeLabel = Number.isNaN(slotStart.getTime()) || Number.isNaN(slotEnd.getTime())
-                    ? `${formatLocalDateTime(slot.start)} – ${formatLocalDateTime(slot.end)}`
-                    : `${slotStart.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })} – ${slotEnd.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`
-
-                  return (
-                    <article
-                      key={slot.id}
-                      style={{ '--card-order': index }}
-                      className={`slot-card ${isAvailable ? 'available' : 'unavailable'} ${selectedSlotId === slot.id ? 'selected' : ''}`}
-                    >
-                      <div className="slot-card-top">
-                        <span className="provider-avatar" aria-hidden="true">{initials}</span>
-                        <span className={`availability ${isAvailable ? 'open' : 'closed'}`}>
-                          <span className="availability-dot" />{isAvailable ? 'Available' : isPast ? 'Past' : 'Booked'}
-                        </span>
+            <div className="slot-list">
+              {upcomingGroups.length === 0 ? (
+                <div className="empty-upcoming">
+                  <p className="empty-state">No upcoming slots right now. Please check back soon.</p>
+                  <button
+                    type="button"
+                    className="secondary-button day-toggle-button"
+                    onClick={() => setShowPastSlots((visible) => !visible)}
+                    aria-expanded={showPastSlots}
+                  >
+                    {showPastSlots ? 'Hide past slots' : `Show past slots (${startedSlots.length})`}
+                  </button>
+                  {showPastSlots && startedSlots.length === 0 && (
+                    <p className="empty-state">There are no started slots to show.</p>
+                  )}
+                  {showPastSlots && startedSlots.length > 0 && (
+                    <section className="slot-day-group started-slot-group" aria-label="Started slots">
+                      <h3 className="slot-day-heading">Started slots</h3>
+                      <div className="slots-grid">
+                        {startedSlots.map((slot, index) => renderSlotCard(slot, index))}
                       </div>
-                      <p className="slot-provider">{slot.provider}</p>
-                      <p className="slot-date">{dateLabel}</p>
-                      <p className="slot-times">{timeLabel}</p>
-                      <button
-                        type="button"
-                        className="slot-select-button"
-                        onClick={() => setSelectedSlotId(slot.id)}
-                        disabled={!isAvailable}
-                      >
-                        {selectedSlotId === slot.id ? 'Selected' : isPast ? 'Time passed' : isAvailable ? 'Choose this time' : 'Not available'}
-                        {isAvailable && <span aria-hidden="true">→</span>}
-                      </button>
-                    </article>
-                  )
-                })
+                    </section>
+                  )}
+                </div>
+              ) : (
+                <>
+                  {visibleUpcomingGroups.map((group) => (
+                    <section className="slot-day-group" key={group.key}>
+                      <h3 className="slot-day-heading">{group.heading}</h3>
+                      <div className="slots-grid">
+                        {group.slots.map((slot, index) => renderSlotCard(slot, index))}
+                      </div>
+                    </section>
+                  ))}
+                  {upcomingGroups.length > 14 && (
+                    <button
+                      type="button"
+                      className="secondary-button day-toggle-button"
+                      onClick={() => setShowMoreDays((visible) => !visible)}
+                      aria-expanded={showMoreDays}
+                    >
+                      {showMoreDays ? 'Show fewer days' : `Show more days (${upcomingGroups.length - 14} more)`}
+                    </button>
+                  )}
+                  {startedSlots.length > 0 && (
+                    <section className="slot-day-group started-slot-group" aria-label="Started slots">
+                      <h3 className="slot-day-heading">Started slots</h3>
+                      <div className="slots-grid">
+                        {startedSlots.map((slot, index) => renderSlotCard(slot, index))}
+                      </div>
+                    </section>
+                  )}
+                </>
               )}
             </div>
           )}
